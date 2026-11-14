@@ -24,26 +24,19 @@ This project's own wrapper code is released under the same terms as the rest of 
 
 ## Usage
 
-One-shot commands:
-
     ncrar-helper version
     ncrar-helper list <archive>                  # JSON lines, one per entry
     ncrar-helper read <archive> <entry-index>    # raw entry data on stdout
     ncrar-helper link <archive> <entry-index>    # link target as JSON
 
-Persistent mode:
-
-    ncrar-helper serve                           # JSON commands on stdin, responses on stdout
-
-Passwords are taken from the NCRAR_PASSWORD environment variable, or from the first line of stdin
-when --password-stdin is given (never from the command line, so that they do not show up in ps).
-In serve mode the password travels in the open command instead.
+Each invocation performs one command. Passwords are taken from the NCRAR_PASSWORD environment
+variable, or from the first line of stdin when --password-stdin is given (never from the command
+line, so that they do not show up in ps).
 
 ## Protocol
 
-See docs/protocol.md. Both the one-shot commands and the persistent serve mode are documented
-there. serve keeps the entry listing in memory between commands and supports open, list, read,
-link, close and quit. It reopens the archive for read and for the RAR4 symlink fallback in link.
+See docs/protocol.md. The CLI is one-shot; list emits one JSON object per entry (including the
+optional Unix mode field) and read emits the raw entry data.
 
 ## Packaging
 
