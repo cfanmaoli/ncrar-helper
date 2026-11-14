@@ -42,5 +42,7 @@ optional Unix mode field) and read emits the raw entry data.
 
     scripts/package.sh
 
-Builds dist/ncrar-helper-<version>-macos-<arch>.zip with the binary, the license and these
-docs, plus a SHA256 next to it. The component is distributed separately from the GPL application.
+Builds dist/ncrar-helper-<version>-macos-<arch>.dmg: a ncrar-helper.app bundle (the binary, the
+license and these docs inside) next to an /Applications shortcut, plus a SHA256 file. The user
+drags the bundle into Applications - there is no installer and no script to run. The component is
+distributed separately from the GPL application.
