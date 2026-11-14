@@ -70,5 +70,5 @@ hdiutil create -volname "RAR Support for Nimble Commander" \
     -srcfolder "${STAGE}" -fs HFS+ -format UDZO -ov "${DMG}" >/dev/null
 
 rm -rf "${STAGE}"
-shasum -a 256 "${DMG}" > "${DMG}.sha256"
+( cd "${ROOT_DIR}/dist" && shasum -a 256 "$( basename "${DMG}" )" > "$( basename "${DMG}" ).sha256" )
 echo "Built ${DMG}"
