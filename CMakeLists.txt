@@ -1,0 +1,30 @@
+cmake_minimum_required(VERSION 3.20)
+project(ncrar-helper LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_OSX_DEPLOYMENT_TARGET 12.0)
+
+set(UNRAR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/unrar")
+if(NOT EXISTS "${UNRAR_DIR}/dll.hpp")
+    message(FATAL_ERROR "vendor/unrar is missing - run scripts/bootstrap-unrar.sh first")
+endif()
+
+# The same subset that the upstream 'make lib' target builds: the DLL API plus everything it needs.
+set(UNRAR_OBJECTS
+    rar strlist strfn pathfn smallfn global file filefn filcreat
+    archive arcread unicode system crypt crc rawread encname resource match timefn rdwrfn
+    consio options errhnd rarvm secpassword rijndael getbits sha1 sha256 blake2s hash extinfo
+    extract volume list find unpack headers threadpool rs16 cmddata ui largepage
+    filestr scantree dll qopen)
+
+set(UNRAR_SOURCES)
+foreach(obj ${UNRAR_OBJECTS})
+    list(APPEND UNRAR_SOURCES "${UNRAR_DIR}/${obj}.cpp")
+endforeach()
+
+add_executable(ncrar-helper src/main.cpp ${UNRAR_SOURCES})
+target_include_directories(ncrar-helper PRIVATE "${UNRAR_DIR}")
+target_compile_definitions(ncrar-helper PRIVATE RAR_SMP RARDLL _FILE_OFFSET_BITS=64 _LARGEFILE_SOURCE)
+target_link_libraries(ncrar-helper PRIVATE pthread)
+target_compile_options(ncrar-helper PRIVATE -fvisibility=hidden)
