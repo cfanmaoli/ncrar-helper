@@ -1,0 +1,76 @@
+name: Check UnRAR upstream
+
+# rarlab.com publishes a new UnRAR source tarball every few months. This workflow compares the
+# version pinned in scripts/bootstrap-unrar.sh with the one currently offered on rarlab.com and
+# opens an issue (assigned to the maintainer) when a newer one is available.
+
+on:
+  schedule:
+    # Daily, 06:17 UTC. The minute is deliberately not :00 - GitHub's scheduler is congested there.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v5
+    - name: Compare the pinned version with rarlab.com
+      id: check
+      run: |
+        pinned=$(sed -n 's/^UNRAR_VERSION=//p' scripts/bootstrap-unrar.sh | head -1)
+        page=$(curl -fsSL --retry 3 --max-time 30 https://www.rarlab.com/rar_add.htm) || \
+          { echo '::warning::could not download the rarlab page'; exit 0; }
+        latest=$(printf '%s' "$page" \
+          | grep -oE 'unrarsrc-[0-9]+(\.[0-9]+)+\.tar\.gz' \
+          | sed -E 's/unrarsrc-(.*)\.tar\.gz/\1/' \
+          | sort -V | tail -1)
+        echo "pinned=$pinned latest=$latest"
+        if [ -z "$latest" ]; then
+          echo '::warning::could not find an unrarsrc link on the rarlab page'
+          exit 0
+        fi
+        echo "pinned=$pinned" >> "$GITHUB_OUTPUT"
+        echo "latest=$latest" >> "$GITHUB_OUTPUT"
+        if [ "$latest" != "$pinned" ] && \
+           [ "$(printf '%s\n%s\n' "$pinned" "$latest" | sort -V | tail -1)" = "$latest" ]; then
+          echo 'outdated=true' >> "$GITHUB_OUTPUT"
+        fi
+    - name: Open or update the issue
+      if: steps.check.outputs.outdated == 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PINNED: ${{ steps.check.outputs.pinned }}
+        LATEST: ${{ steps.check.outputs.latest }}
+      run: |
+        set -euo pipefail
+        title="UnRAR ${LATEST} is available"
+        body=$(mktemp)
+        cat > "$body" <<EOF
+        rarlab.com now offers **UnRAR ${LATEST}**, while `scripts/bootstrap-unrar.sh` still pins
+        **${PINNED}**.
+
+        UnRAR ${LATEST} sources: https://www.rarlab.com/rar/unrarsrc-${LATEST}.tar.gz
+        Downloads page: https://www.rarlab.com/rar_add.htm
+
+        To pick it up:
+
+        - [ ] update `UNRAR_VERSION` in `scripts/bootstrap-unrar.sh`
+        - [ ] run `scripts/bootstrap-unrar.sh` to vendor the new sources
+        - [ ] build and test (`scripts/package.sh`), then tag a new helper release
+        EOF
+        existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+          --search "\"$title\" in:title" --json number,title \
+          --jq ".[] | select(.title == \"$title\") | .number" | head -1)
+        if [ -n "$existing" ]; then
+          gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
+            --body "Still available as of $(date -u +%Y-%m-%d)."
+        else
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$body" \
+            --assignee cfanmaoli
+        fi
