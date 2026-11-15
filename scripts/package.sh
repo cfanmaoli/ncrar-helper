@@ -20,7 +20,7 @@ rm -rf "${ROOT_DIR}/dist"
 mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
 
 cp build/ncrar-helper "${APP}/Contents/MacOS/${APP_NAME}"
-cp LICENSE README.md "${APP}/Contents/Resources/"
+cp LICENSE LICENSE-MIT README.md "${APP}/Contents/Resources/"
 cp docs/protocol.md "${APP}/Contents/Resources/protocol.md"
 
 cat > "${APP}/Contents/Info.plist" <<PLIST

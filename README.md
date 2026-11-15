@@ -70,5 +70,10 @@ terminator, and `read` emits the raw entry data.
 
 ## License
 
-The UnRAR sources are (c) Alexander Roshal and are used under the UnRAR license, see LICENSE. The
-wrapper code in this repository is distributed under the same UnRAR terms.
+The wrapper code in this repository (the CLI, the build and packaging scripts and the documentation)
+is distributed under the MIT license, see LICENSE-MIT.
+
+The bundled UnRAR sources are (c) Alexander Roshal and are used under the UnRAR license, see
+LICENSE. That license still governs the RAR handling itself: the program may only be used to handle
+RAR archives and must not be used to build a RAR-compatible archiver. The UnRAR license text is
+shipped in the application bundle and quoted in the source.
