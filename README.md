@@ -48,6 +48,13 @@ application's built-in libarchive reader.
 license and these docs inside) next to an `/Applications` shortcut, plus a SHA256 file. The version
 defaults to 1.0 and can be overridden, e.g. `VERSION=1.1 scripts/package.sh`.
 
+## Automation
+
+`.github/workflows/check-unrar.yml` runs daily and compares the UnRAR version pinned in
+`scripts/bootstrap-unrar.sh` with the one offered on rarlab.com. When a newer one appears it bumps
+`VERSION` and `UNRAR_VERSION`, builds the DMG and prepares a **draft** release, then opens an issue
+assigned to the maintainer. Publishing the draft release is still a manual step.
+
 ## Usage
 
     ncrar-helper version

@@ -6,7 +6,7 @@ set -e
 
 CUR_DIR=$( cd "$( dirname "$0" )" >/dev/null 2>&1 && pwd )
 ROOT_DIR="${CUR_DIR}/.."
-VERSION="${VERSION:-1.0}"
+VERSION="${VERSION:-$( cat "${ROOT_DIR}/VERSION" )}"
 ARCH=$( uname -m )
 APP_NAME="ncrar-helper"
 APP="${ROOT_DIR}/dist/${APP_NAME}.app"
