@@ -1,0 +1,44 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+    - uses: actions/checkout@v5
+    - name: Install the build dependencies
+      run: brew install cmake wget coreutils
+    - name: Put the GNU coreutils first on PATH
+      # tests/run-tests.sh needs timeout(1); macOS only ships it as gtimeout.
+      run: echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
+    - name: Fetch the pinned UnRAR sources
+      run: scripts/bootstrap-unrar.sh
+    - name: Build
+      run: |
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
+        cmake --build build -j "$(sysctl -n hw.activecpu)"
+    - name: Test
+      run: tests/run-tests.sh build/ncrar-helper
+    - name: Build with AddressSanitizer and UndefinedBehaviorSanitizer
+      run: |
+        cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_OSX_ARCHITECTURES=arm64 \
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+        cmake --build build-asan -j "$(sysctl -n hw.activecpu)"
+    - name: Test the sanitizer build
+      env:
+        ASAN_OPTIONS: detect_leaks=0
+        UBSAN_OPTIONS: print_stacktrace=1
+      run: tests/run-tests.sh build-asan/ncrar-helper

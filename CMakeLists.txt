@@ -28,3 +28,8 @@ target_include_directories(ncrar-helper PRIVATE "${UNRAR_DIR}")
 target_compile_definitions(ncrar-helper PRIVATE RAR_SMP RARDLL _FILE_OFFSET_BITS=64 _LARGEFILE_SOURCE)
 target_link_libraries(ncrar-helper PRIVATE pthread)
 target_compile_options(ncrar-helper PRIVATE -fvisibility=hidden)
+# The wrapper is compiled with the project's own warning level and hardening; the vendored UnRAR
+# sources keep compiling exactly as they ship upstream.
+set_source_files_properties(src/main.cpp PROPERTIES COMPILE_OPTIONS
+    "-Wall;-Wextra;-Werror;-fstack-protector-strong")
+target_compile_definitions(ncrar-helper PRIVATE $<$<CONFIG:Release>:_FORTIFY_SOURCE=2>)

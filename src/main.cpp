@@ -22,8 +22,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <cwchar>
 #include <exception>
+#include <fcntl.h>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -43,6 +46,12 @@ constexpr int kExitOpen = 3;
 constexpr int kExitRead = 4;
 constexpr int kExitPassword = 5;
 
+// The client reads at most 512 MB of output; stop earlier instead of filling the pipe forever.
+constexpr size_t kMaxListEntries = 5'000'000;
+constexpr size_t kMaxListBytes = size_t{512} * 1024 * 1024;
+constexpr size_t kMaxPasswordSize = 4096;
+constexpr const char *kExtractedLinkName = "link";
+
 // Values of RARHeaderDataEx::RedirType. They live in the library's private headers, so mirror the
 // small public part of the enum here instead of including internal UnRAR headers.
 enum : unsigned int {
@@ -56,9 +65,14 @@ enum : unsigned int {
 
 bool IsLinkType(unsigned int _type)
 {
+    // A file copy (5) is a reference to another entry of the archive, not a payload-bearing file.
     return _type == kRedirUnixSymlink || _type == kRedirWinSymlink || _type == kRedirJunction ||
-           _type == kRedirHardlink;
+           _type == kRedirHardlink || _type == kRedirFileCopy;
 }
+
+// Defined below; the volume/password callbacks need them.
+std::string Utf32ToUtf8(const wchar_t *_str, size_t _max);
+bool Utf8ToWide(std::string_view _utf8, size_t _max_chars, std::wstring &_out);
 
 struct Context {
     const char *password = nullptr;
@@ -71,10 +85,25 @@ int PASCAL Callback(UINT _msg, LPARAM _user, LPARAM _p1, LPARAM _p2)
     auto &ctx = *reinterpret_cast<Context *>(_user);
     switch( _msg ) {
         case UCM_CHANGEVOLUME:
-        case UCM_CHANGEVOLUMEW:
-            // Let UnRAR continue with the volume name it computed; multi-volume archives sit next
-            // to the first volume and UnRAR derives their names itself.
+        case UCM_CHANGEVOLUMEW: {
+            if( _p2 == RAR_VOL_NOTIFY )
+                return 1;
+            // RAR_VOL_ASK: the buffer already holds the next volume name UnRAR derived from the
+            // current one. A non-interactive helper cannot offer an alternative, so answer 1 (keep
+            // the name) only when that volume really exists - answering 1 unconditionally makes
+            // UnRAR retry a missing volume forever.
+            const std::string name = _msg == UCM_CHANGEVOLUMEW
+                                         ? Utf32ToUtf8(reinterpret_cast<const wchar_t *>(_p1), 4096)
+                                         : std::string(reinterpret_cast<const char *>(_p1));
+            // Opening the file catches a missing volume as well as one that exists but can't be
+            // read (permissions, a directory in its place, an unreadable mount); UnRAR would loop
+            // on all of them.
+            const int volume_fd = ::open(name.c_str(), O_RDONLY | O_CLOEXEC);
+            if( volume_fd < 0 )
+                return -1;
+            ::close(volume_fd);
             return 1;
+        }
         case UCM_NEEDPASSWORD:
         case UCM_NEEDPASSWORDW: {
             if( ctx.password == nullptr )
@@ -86,13 +115,16 @@ int PASCAL Callback(UINT _msg, LPARAM _user, LPARAM _p1, LPARAM _p2)
                 std::snprintf(reinterpret_cast<char *>(_p1), size, "%s", ctx.password);
             }
             else {
-                if( size < sizeof(wchar_t) )
+                // For the wide variant the capacity is a number of wchar_t units, and UnRAR expects
+                // a UTF-16 string - copying the UTF-8 bytes one by one breaks every non-ASCII
+                // password (and the ANSI fallback that would otherwise follow).
+                const size_t capacity = static_cast<size_t>(_p2);
+                if( capacity == 0 )
                     return 0;
-                auto *dst = reinterpret_cast<wchar_t *>(_p1);
-                const size_t len = std::min(size / sizeof(wchar_t) - 1, std::strlen(ctx.password));
-                for( size_t i = 0; i != len; ++i )
-                    dst[i] = static_cast<unsigned char>(ctx.password[i]);
-                dst[len] = 0;
+                std::wstring wide;
+                if( !Utf8ToWide(ctx.password, capacity - 1, wide) )
+                    return 0;
+                std::wmemcpy(reinterpret_cast<wchar_t *>(_p1), wide.c_str(), wide.size() + 1);
             }
             return 1;
         }
@@ -149,6 +181,48 @@ std::string Utf32ToUtf8(const wchar_t *_str, size_t _max)
     for( size_t i = 0; i != _max && _str[i] != 0; ++i )
         AppendUtf8(out, static_cast<uint32_t>(_str[i]));
     return out;
+}
+
+bool Utf8ToWide(std::string_view _utf8, size_t _max_chars, std::wstring &_out)
+{
+    _out.clear();
+    size_t i = 0;
+    while( i < _utf8.size() && _out.size() < _max_chars ) {
+        const auto c = static_cast<unsigned char>(_utf8[i]);
+        uint32_t code_point = 0;
+        size_t extra = 0;
+        if( c < 0x80 ) {
+            code_point = c;
+        }
+        else if( (c & 0xE0) == 0xC0 ) {
+            code_point = c & 0x1F;
+            extra = 1;
+        }
+        else if( (c & 0xF0) == 0xE0 ) {
+            code_point = c & 0x0F;
+            extra = 2;
+        }
+        else if( (c & 0xF8) == 0xF0 ) {
+            code_point = c & 0x07;
+            extra = 3;
+        }
+        else {
+            return false;
+        }
+        if( i + extra >= _utf8.size() )
+            return false;
+        for( size_t k = 1; k <= extra; ++k ) {
+            const auto continuation = static_cast<unsigned char>(_utf8[i + k]);
+            if( (continuation & 0xC0) != 0x80 )
+                return false;
+            code_point = (code_point << 6) | (continuation & 0x3F);
+        }
+        if( code_point > 0x10FFFF || (code_point >= 0xD800 && code_point <= 0xDFFF) )
+            return false;
+        _out.push_back(static_cast<wchar_t>(code_point));
+        i += extra + 1;
+    }
+    return i == _utf8.size();
 }
 
 void AppendJsonString(std::string &_out, std::string_view _str)
@@ -243,7 +317,7 @@ Status StatusForRarError(int _rc, bool _had_password)
         case ERAR_UNKNOWN_FORMAT:
             return MakeStatus(kExitRead, "unsupported archive format");
         case ERAR_EOPEN:
-            return MakeStatus(kExitOpen, "cannot open the archive");
+            return MakeStatus(kExitRead, "a volume of the archive is missing or cannot be opened");
         case ERAR_NO_MEMORY:
             return MakeStatus(kExitRead, "out of memory");
         case ERAR_EWRITE:
@@ -300,10 +374,6 @@ struct Archive {
     }
 };
 
-struct Entry {
-    std::string line;
-};
-
 std::string BuildEntryLine(const RARHeaderDataEx &_hdr, unsigned int _index, const std::string &_link_target)
 {
     const std::string name = Utf32ToUtf8(_hdr.FileNameW, 1024);
@@ -345,38 +415,6 @@ std::string BuildEntryLine(const RARHeaderDataEx &_hdr, unsigned int _index, con
         line += ",\"mode\":" + std::to_string(mode);
     line += '}';
     return line;
-}
-
-Status CollectEntries(Archive &_archive, std::vector<Entry> &_entries)
-{
-    RARHeaderDataEx hdr{};
-    wchar_t link_target[1024]{};
-    for( unsigned int index = 0;; ++index ) {
-        // The library copies the target of a symlink/junction into this buffer when it is set up.
-        // It must be re-armed before every header read: the previous header may have left a
-        // pointer, and a malformed archive can return before filling the structure.
-        hdr.RedirName = link_target;
-        hdr.RedirNameSize = 1024;
-        link_target[0] = 0;
-        const int rc = RARReadHeaderEx(_archive.handle, &hdr);
-        if( rc == ERAR_END_ARCHIVE )
-            break;
-        if( rc != ERAR_SUCCESS )
-            return StatusForRarError(rc, _archive.ctx.password != nullptr);
-
-        std::string target;
-        if( hdr.RedirType != kRedirNone && hdr.RedirName != nullptr && hdr.RedirName[0] != 0 )
-            target = Utf32ToUtf8(hdr.RedirName, hdr.RedirNameSize);
-
-        Entry entry;
-        entry.line = BuildEntryLine(hdr, index, target);
-        _entries.push_back(std::move(entry));
-
-        const int skip_rc = RARProcessFile(_archive.handle, RAR_SKIP, nullptr, nullptr);
-        if( skip_rc != ERAR_SUCCESS )
-            return StatusForRarError(skip_rc, _archive.ctx.password != nullptr);
-    }
-    return {};
 }
 
 Status
@@ -479,25 +517,6 @@ bool ReadLinkTarget(const std::string &_path, std::string &_target)
     }
 }
 
-bool FindExtractedLink(const std::string &_dir, std::string &_target)
-{
-    std::error_code error;
-    std::filesystem::recursive_directory_iterator iterator(_dir, error);
-    const std::filesystem::recursive_directory_iterator end;
-    if( error )
-        return false;
-    while( iterator != end ) {
-        const std::filesystem::directory_entry &entry = *iterator;
-        std::error_code type_error;
-        if( entry.is_symlink(type_error) && !type_error && ReadLinkTarget(entry.path().string(), _target) )
-            return true;
-        iterator.increment(error);
-        if( error )
-            return false;
-    }
-    return false;
-}
-
 Status ResolveLinkTargetByExtraction(Archive &_archive, bool _had_password, std::string &_target)
 {
     TempDir temp_dir;
@@ -506,11 +525,16 @@ Status ResolveLinkTargetByExtraction(Archive &_archive, bool _had_password, std:
 
     _archive.ctx.output_fd = -1;
     _archive.ctx.write_failed = false;
-    const int rc = RARProcessFile(_archive.handle, RAR_EXTRACT, const_cast<char *>(temp_dir.Path().c_str()), nullptr);
+    // The entry name comes from an untrusted archive; pin the output name so UnRAR writes exactly
+    // one object inside the mkdtemp directory instead of relying on its own path cleanup.
+    const int rc = RARProcessFile(_archive.handle,
+                                  RAR_EXTRACT,
+                                  const_cast<char *>(temp_dir.Path().c_str()),
+                                  const_cast<char *>(kExtractedLinkName));
     if( rc != ERAR_SUCCESS )
         return StatusForRarError(rc, _had_password);
 
-    if( !FindExtractedLink(temp_dir.Path(), _target) )
+    if( !ReadLinkTarget(temp_dir.Path() + "/" + kExtractedLinkName, _target) )
         return MakeStatus(kExitRead, "cannot determine the link target");
 
     if( !temp_dir.Remove() )
@@ -541,16 +565,40 @@ int CommandList(const char *_archive_path, const char *_password)
     if( !archive.Open(_archive_path, RAR_OM_LIST, _password) )
         return FailStatus(StatusForOpenResult(archive.open_result, _password != nullptr));
 
-    std::vector<Entry> entries;
-    const Status status = CollectEntries(archive, entries);
-    if( !status.Ok() )
-        return FailStatus(status);
+    RARHeaderDataEx hdr{};
+    wchar_t link_target[1024]{};
+    size_t entries = 0;
+    size_t bytes = 0;
+    for( unsigned int index = 0;; ++index ) {
+        hdr.RedirName = link_target;
+        hdr.RedirNameSize = 1024;
+        link_target[0] = 0;
+        const int rc = RARReadHeaderEx(archive.handle, &hdr);
+        if( rc == ERAR_END_ARCHIVE )
+            break;
+        if( rc != ERAR_SUCCESS )
+            return FailStatus(StatusForRarError(rc, _password != nullptr));
 
-    for( const Entry &entry : entries ) {
-        std::fwrite(entry.line.data(), 1, entry.line.size(), stdout);
-        std::fputc('\n', stdout);
+        std::string target;
+        if( hdr.RedirType != kRedirNone && hdr.RedirName != nullptr && hdr.RedirName[0] != 0 )
+            target = Utf32ToUtf8(hdr.RedirName, hdr.RedirNameSize);
+
+        // Write each entry straight out: buffering the whole archive here would let a crafted file
+        // exhaust the helper's memory before the client sees a single line.
+        const std::string line = BuildEntryLine(hdr, index, target);
+        if( std::fwrite(line.data(), 1, line.size(), stdout) != line.size() ||
+            std::fputc('\n', stdout) == EOF )
+            return Fail("cannot write to stdout", kExitRead);
+        bytes += line.size() + 1;
+        if( ++entries > kMaxListEntries || bytes > kMaxListBytes )
+            return Fail("the archive listing is too large", kExitRead);
+
+        const int skip_rc = RARProcessFile(archive.handle, RAR_SKIP, nullptr, nullptr);
+        if( skip_rc != ERAR_SUCCESS )
+            return FailStatus(StatusForRarError(skip_rc, _password != nullptr));
     }
-    std::printf("{\"done\":true,\"entries\":%zu}\n", entries.size());
+
+    std::printf("{\"done\":true,\"entries\":%zu}\n", entries);
     if( std::fflush(stdout) != 0 )
         return Fail("cannot write to stdout", kExitRead);
     return kExitOk;
@@ -611,16 +659,37 @@ int CommandLink(const char *_archive_path, unsigned int _entry_index, const char
     return kExitOk;
 }
 
-std::string ReadPasswordFromStdin()
+std::string ReadPasswordFromStdin(bool &_too_long)
 {
+    _too_long = false;
     std::string password;
     char ch = 0;
     while( std::fread(&ch, 1, 1, stdin) == 1 ) {
         if( ch == '\n' )
             break;
+        if( password.size() >= kMaxPasswordSize ) {
+            _too_long = true;
+            break;
+        }
         password += ch;
     }
     return password;
+}
+
+bool ParseIndex(const std::string &_arg, unsigned int &_index)
+{
+    if( _arg.empty() )
+        return false;
+    unsigned long long value = 0;
+    for( const char c : _arg ) {
+        if( c < '0' || c > '9' )
+            return false;
+        value = value * 10 + static_cast<unsigned long long>(c - '0');
+        if( value > std::numeric_limits<unsigned int>::max() )
+            return false;
+    }
+    _index = static_cast<unsigned int>(value);
+    return true;
 }
 
 const char *PasswordFromEnv()
@@ -663,7 +732,10 @@ int main(int _argc, char **_argv)
     std::string password;
     const char *password_ptr = PasswordFromEnv();
     if( password_stdin ) {
-        password = ReadPasswordFromStdin();
+        bool too_long = false;
+        password = ReadPasswordFromStdin(too_long);
+        if( too_long )
+            return Fail("the password is too long", kExitUsage);
         password_ptr = password.empty() ? nullptr : password.c_str();
     }
 
@@ -672,20 +744,16 @@ int main(int _argc, char **_argv)
     if( command == "list" && rest.size() == 2 )
         return CommandList(rest[1].c_str(), password_ptr);
     if( command == "read" && rest.size() == 3 ) {
-        try {
-            const unsigned int index = static_cast<unsigned int>(std::stoul(rest[2]));
-            return CommandRead(rest[1].c_str(), index, password_ptr);
-        } catch( const std::exception & ) {
+        unsigned int index = 0;
+        if( !ParseIndex(rest[2], index) )
             return Fail("invalid entry index", kExitUsage);
-        }
+        return CommandRead(rest[1].c_str(), index, password_ptr);
     }
     if( command == "link" && rest.size() == 3 ) {
-        try {
-            const unsigned int index = static_cast<unsigned int>(std::stoul(rest[2]));
-            return CommandLink(rest[1].c_str(), index, password_ptr);
-        } catch( const std::exception & ) {
+        unsigned int index = 0;
+        if( !ParseIndex(rest[2], index) )
             return Fail("invalid entry index", kExitUsage);
-        }
+        return CommandLink(rest[1].c_str(), index, password_ptr);
     }
 
     Usage();

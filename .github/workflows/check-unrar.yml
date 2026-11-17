@@ -1,9 +1,13 @@
 name: Check UnRAR upstream
 
-# rarlab.com publishes a new UnRAR source tarball every few months. This workflow compares the
-# version pinned in scripts/bootstrap-unrar.sh with the one currently offered on rarlab.com and,
-# when a newer one is available, builds the helper and opens a DRAFT release for review. Publishing
-# stays a manual step: inspect the draft release, then press "Publish release".
+# rarlab.com publishes a new UnRAR source tarball every few months. This workflow only compares the
+# version pinned in scripts/bootstrap-unrar.sh with the one currently offered on rarlab.com and opens
+# an issue when a newer one is available.
+#
+# It deliberately does not download, build or push anything: the tarball is pinned by SHA256 (see
+# scripts/bootstrap-unrar.sh), and a human has to fetch the new sources, verify them and update the
+# hash in a reviewed commit. That keeps an unreviewed download from being compiled inside CI and
+# then pushed to main with a write token.
 
 on:
   schedule:
@@ -44,8 +48,8 @@ jobs:
           exit 0
         fi
         existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
-          --search "\"UnRAR ${latest}\" in:title" --json number,title \
-          --jq ".[] | select(.title == \"UnRAR ${latest} is available\") | .number" | head -1)
+          --search "\"UnRAR $latest\" in:title" --json number,title \
+          --jq ".[] | select(.title == \"UnRAR $latest is available\") | .number" | head -1)
         echo "pinned=$pinned" >> "$GITHUB_OUTPUT"
         echo "latest=$latest" >> "$GITHUB_OUTPUT"
         echo "existing_issue=$existing" >> "$GITHUB_OUTPUT"
@@ -54,117 +58,34 @@ jobs:
           echo 'outdated=true' >> "$GITHUB_OUTPUT"
         fi
 
-  build:
-    # Only when there is a newer UnRAR and no open issue for it yet (the issue is the "already
-    # handled" marker, so a failed build is not retried every day).
+  notify:
     needs: check
     if: needs.check.outputs.outdated == 'true' && needs.check.outputs.existing_issue == ''
-    runs-on: macos-26
-    timeout-minutes: 40
-    permissions:
-      contents: write
-      issues: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-    - uses: actions/checkout@v5
-      with:
-        fetch-depth: 0
-    - name: Install the build dependencies
-      run: brew install cmake wget create-dmg
-    - name: Bump the pinned versions
-      id: versions
-      run: |
-        set -euo pipefail
-        unrar="${{ needs.check.outputs.latest }}"
-        current=$(cat VERSION)
-        major=${current%%.*}
-        rest=${current#*.}
-        minor=${rest%%.*}
-        patch=${rest#*.}
-        next="${major}.${minor}.$((patch + 1))"
-        echo "$next" > VERSION
-        sed -i '' "s/^UNRAR_VERSION=.*/UNRAR_VERSION=${unrar}/" scripts/bootstrap-unrar.sh
-        git config user.name 'github-actions[bot]'
-        git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-        git add VERSION scripts/bootstrap-unrar.sh
-        git commit -m "Update UnRAR to ${unrar} (helper ${next})"
-        git push
-        echo "version=${next}" >> "$GITHUB_OUTPUT"
-        echo "unrar=${unrar}" >> "$GITHUB_OUTPUT"
-        echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-    - name: Build and package
-      run: |
-        set -euo pipefail
-        scripts/bootstrap-unrar.sh
-        VERSION="${{ steps.versions.outputs.version }}" scripts/package.sh
-    - name: Create the draft release
-      id: release
+    - name: Open an issue with the manual update steps
       env:
         GH_TOKEN: ${{ github.token }}
-        VERSION: ${{ steps.versions.outputs.version }}
-        UNRAR: ${{ steps.versions.outputs.unrar }}
-        SHA: ${{ steps.versions.outputs.sha }}
-      run: |
-        set -euo pipefail
-        dmg=$(ls dist/*.dmg | head -1)
-        sha256=$(awk '{print $1}' "${dmg}.sha256")
-        cat > /tmp/notes.md <<EOF
-        ## ncrar-helper ${VERSION}
-
-        Optional RAR support component for Nimble Commander-Fork, built against **UnRAR ${UNRAR}**.
-
-        The wrapper code is MIT-licensed; the bundled UnRAR sources remain under the UnRAR license
-        (the license text ships in the bundle and is quoted in the source).
-
-        ### Installation
-
-        Download the .dmg, open it and drag `ncrar-helper.app` into Applications. There is no
-        installer and no script to run.
-
-        The bundle is ad-hoc signed and not notarised; if Gatekeeper quarantines it, clear the
-        attribute:
-
-        ```sh
-        xattr -dr com.apple.quarantine /Applications/ncrar-helper.app
-        ```
-
-        Requires macOS 12 or later, Apple Silicon.
-
-        ### SHA256
-
-        ```
-        ${sha256}  $(basename "$dmg")
-        ```
-        EOF
-        url=$(gh release create "v${VERSION}" --repo "$GITHUB_REPOSITORY" --draft --target "$SHA" \
-          --title "ncrar-helper ${VERSION}" --notes-file /tmp/notes.md "$dmg" "${dmg}.sha256")
-        echo "url=${url}" >> "$GITHUB_OUTPUT"
-    - name: Update the reminder issue
-      env:
-        GH_TOKEN: ${{ github.token }}
-        VERSION: ${{ steps.versions.outputs.version }}
-        UNRAR: ${{ steps.versions.outputs.unrar }}
-        RELEASE_URL: ${{ steps.release.outputs.url }}
-      run: |
-        set -euo pipefail
-        gh issue create --repo "$GITHUB_REPOSITORY" \
-          --title "UnRAR ${UNRAR} is available" \
-          --assignee cfanmaoli \
-          --body "rarlab.com offers **UnRAR ${UNRAR}**. A draft release **v${VERSION}** has been built and
-        attached to <${RELEASE_URL}>.
-
-        Please review the upstream changes and the DMG, then press *Publish release* on the draft.
-        The repository already pins UnRAR ${UNRAR} and the helper version ${VERSION}."
-    - name: Report a build failure
-      if: failure()
-      env:
-        GH_TOKEN: ${{ github.token }}
-        UNRAR: ${{ needs.check.outputs.latest }}
+        LATEST: ${{ needs.check.outputs.latest }}
         PINNED: ${{ needs.check.outputs.pinned }}
       run: |
         gh issue create --repo "$GITHUB_REPOSITORY" \
-          --title "UnRAR ${UNRAR} is available" \
+          --title "UnRAR $LATEST is available" \
           --assignee cfanmaoli \
-          --body "rarlab.com offers **UnRAR ${UNRAR}** (pinned: ${PINNED}), but the automatic build
-        failed. See the run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          --body "rarlab.com offers **UnRAR $LATEST** (the repository pins $PINNED).
 
-        Fix the build, then close this issue to let the next scheduled run try again."
+        The sources are pinned by SHA256 so that an unreviewed download is never compiled - update
+        both constants in `scripts/bootstrap-unrar.sh` manually:
+
+        1. Download `https://www.rarlab.com/rar/unrarsrc-$LATEST.tar.gz` and inspect the changelog.
+        2. Record the checksum: `shasum -a 256 unrarsrc-$LATEST.tar.gz` (cross-check it against an
+           independent mirror if possible).
+        3. Set `UNRAR_VERSION=$LATEST` and the matching `UNRAR_SHA256` in
+           `scripts/bootstrap-unrar.sh`, bump `VERSION` and commit the two files.
+        4. Run `scripts/bootstrap-unrar.sh`, `scripts/package.sh` and
+           `tests/run-tests.sh build/ncrar-helper`, then publish a release with the DMG and its
+           `.sha256` file.
+
+        Close this issue once the new version is released; the next scheduled run then reports the
+        following upstream version."

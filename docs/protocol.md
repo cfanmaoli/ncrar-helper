@@ -20,6 +20,10 @@ One JSON object on stdout:
 
     {"protocol":1,"unrar":11}
 
+`protocol` is the version of this document. `unrar` is the UnRAR **DLL API** version reported by
+`RARGetDllVersion()` (11 for UnRAR 7.x), not the library's release number - the library release the
+binary was built against is stated in the README and the release notes.
+
 ## list
 
 One JSON object per entry, in archive order, then a terminator:
@@ -48,6 +52,15 @@ Fields:
 RAR4 unix symlinks store their target in the entry payload, so list does not extract them and
 leaves link_target out. Use the link command for those entries.
 
+Entries are written to stdout as soon as they are read, so a consumer can start processing while the
+archive is still being walked. The helper refuses a listing beyond 5,000,000 entries or 512 MB of
+output (exit code 4) instead of buffering it.
+
+Because of that streaming the terminator is not guaranteed: if the archive becomes unreadable
+half-way through (a damaged block, a missing volume), the entries read so far have already been
+printed and the command then exits with code 4. A consumer must treat a non-zero exit status as a
+failure and not rely on the terminator alone.
+
 mode is optional on purpose: Windows-written archives carry DOS attributes instead of a Unix mode
 and entries without the 0x8000 Unix-attributes marker have no mode to report. Clients must treat
 the field as absent, not as zero, when it isn't there.
@@ -66,12 +79,14 @@ Writes one JSON object with the target of a symlink, junction or hardlink:
 
 Targets that UnRAR stores in the header (normally RAR5 links) are returned directly. RAR4 unix
 symlinks store the target in the entry payload and fail RAR_TEST; for those entries the helper
-extracts the current entry into a fresh mkdtemp directory with
-RARProcessFile(RAR_EXTRACT, tempdir, nullptr), reads the created symlink with readlink(2), and
-removes the directory again. The target string is returned exactly as stored in the archive.
+extracts the current entry into a fresh mkdtemp directory, using a fixed output name (`link`) so
+that the entry name from the archive cannot influence where it is written, reads the created
+symlink with readlink(2), and removes the directory again. The target string is returned exactly as
+stored in the archive.
 
 The command fails with code 4 when the entry is not a link or when its target cannot be
-determined. No temporary files or directories are left behind on any path, including errors.
+determined. The temporary directory is removed on every normal exit path, including errors; a
+process killed with SIGKILL/SIGTERM can leave it behind in `$TMPDIR`.
 
 ## Exit codes
 
@@ -80,7 +95,7 @@ determined. No temporary files or directories are left behind on any path, inclu
 | 0 | success |
 | 2 | usage error / invalid entry index |
 | 3 | the archive cannot be opened |
-| 4 | the archive/entry cannot be read, or the entry is not a link |
+| 4 | the archive/entry cannot be read, a volume is missing, or the entry is not a link |
 | 5 | a password is required or wrong |
 
 Diagnostics go to stderr as plain text.
@@ -88,7 +103,8 @@ Diagnostics go to stderr as plain text.
 ## Multi-volume archives
 
 The helper follows the volumes that sit next to the first one; the library derives their names.
-A missing volume ends the operation with exit code 4.
+Before continuing into the next volume the helper checks that it exists - a missing, unreadable or
+renamed volume ends the operation promptly with exit code 4 instead of being retried.
 
 ## Limitations
 
@@ -98,6 +114,8 @@ A missing volume ends the operation with exit code 4.
 * Hardlinks whose target is not stored in the header cannot be resolved by the extraction trick:
   UnRAR needs the target file to exist. RAR5 hardlinks normally carry the target in the header and
   work through link; otherwise the command fails with code 4.
+* A file-copy entry (`link_type` 5) is a reference to another entry, not a payload. `link` returns
+  the referenced name when the header carries it; `read` produces no data.
 * An encrypted RAR4 link can be resolved only if its password was supplied to link via
   NCRAR_PASSWORD or --password-stdin. Without a password, link fails with code 5.
 * RAR4 has no password verifier. A wrong password on an encrypted RAR4 payload may therefore be

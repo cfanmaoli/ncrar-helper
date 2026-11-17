@@ -13,7 +13,9 @@ APP="${ROOT_DIR}/dist/${APP_NAME}.app"
 DMG="${ROOT_DIR}/dist/${APP_NAME}-${VERSION}-macos-${ARCH}.dmg"
 
 cd "${ROOT_DIR}"
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+# The file manager only ships arm64 builds, so the component is pinned to the same architecture
+# instead of silently following whatever machine happens to package it.
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
 cmake --build build -j
 
 rm -rf "${ROOT_DIR}/dist"
@@ -58,8 +60,10 @@ cat > "${APP}/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# An ad-hoc signature is enough for a bundle that is only ever executed by the file manager.
-codesign --force --deep --sign - "${APP}" 2>/dev/null || true
+# An ad-hoc signature is what the file manager's check accepts. A failure here used to be ignored,
+# which produced a DMG that the application would silently refuse to use - fail the build instead.
+codesign --force --deep --sign - "${APP}"
+codesign --verify --deep --strict "${APP}"
 
 STAGE="${ROOT_DIR}/dist/stage"
 mkdir -p "${STAGE}"
