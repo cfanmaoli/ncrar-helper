@@ -84,7 +84,7 @@ regressions only.
 ## Automation
 
 `.github/workflows/build.yml` builds the helper and runs the regression tests (also under
-ASAN/UBSAN) on every push and pull request.
+ASAN/UBSAN) on pull requests and manual dispatches; a push alone starts nothing.
 
 `.github/workflows/check-unrar.yml` runs daily and compares the UnRAR version pinned in
 `scripts/bootstrap-unrar.sh` with the one offered on rarlab.com. When a newer one appears it only

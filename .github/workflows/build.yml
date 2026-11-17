@@ -1,7 +1,8 @@
 name: Build and test
 
 on:
-  push:
+  # A push does not start anything - the maintainer runs the tests by hand when needed. Pull
+  # requests still get the full build/test, so outside contributions are checked.
   pull_request:
   workflow_dispatch:
 
