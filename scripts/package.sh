@@ -7,7 +7,9 @@ set -e
 CUR_DIR=$( cd "$( dirname "$0" )" >/dev/null 2>&1 && pwd )
 ROOT_DIR="${CUR_DIR}/.."
 VERSION="${VERSION:-$( cat "${ROOT_DIR}/VERSION" )}"
-ARCH=$( uname -m )
+# Fixed rather than uname -m: the build below pins CMAKE_OSX_ARCHITECTURES to arm64, so the DMG
+# must be named after what is inside it even when packaged on an Intel host.
+ARCH=arm64
 APP_NAME="ncrar-helper"
 APP="${ROOT_DIR}/dist/${APP_NAME}.app"
 DMG="${ROOT_DIR}/dist/${APP_NAME}-${VERSION}-macos-${ARCH}.dmg"

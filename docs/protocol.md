@@ -104,7 +104,9 @@ Diagnostics go to stderr as plain text.
 
 The helper follows the volumes that sit next to the first one; the library derives their names.
 Before continuing into the next volume the helper checks that it exists - a missing, unreadable or
-renamed volume ends the operation promptly with exit code 4 instead of being retried.
+renamed volume ends the operation promptly with exit code 4 instead of being retried. A volume that
+exists but can't be a RAR volume (a FIFO, a device, a directory) is refused the same way: the
+helper reports 3 or 4 depending on where the library notices, but never waits for it.
 
 ## Limitations
 

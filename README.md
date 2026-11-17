@@ -55,6 +55,11 @@ The tarball is verified against the SHA256 pinned in `scripts/bootstrap-unrar.sh
 unpacked; a mismatch aborts the build. Update the version and the hash together in a reviewed
 commit.
 
+One small patch is applied on top of the pristine sources
+(`scripts/patches/unrar-nonblock.patch`): UnRAR opens volumes without `O_NONBLOCK`, which would
+let a FIFO placed at a volume name hang the reader. If the patch stops applying after an upstream
+update, the bootstrap fails instead of silently building an unprotected binary.
+
 `scripts/package.sh` builds the distributable
 `dist/ncrar-helper-<version>-macos-<arch>.dmg`: the `ncrar-helper.app` bundle (the binary, the
 license and these docs inside) next to an `/Applications` shortcut, plus a SHA256 file. The version
@@ -66,9 +71,15 @@ defaults to the `VERSION` file and can be overridden, e.g. `VERSION=1.2.0 script
 
 The script runs against the fixtures in `tests/data` (produced with RAR 7.30): listing and payload
 reads, a Unicode entry name, a symlink target, a header-encrypted archive with a non-ASCII password
-(`päss`), a multi-volume set, a multi-volume set with a missing part, garbage input and invalid
-entry indexes. The CI workflow builds with ASAN/UBSAN and runs the same script. There is no fuzzing
-yet; the malformed-input cases are corpus regressions only.
+(`päss`), multi-volume sets with a missing, unreadable and FIFO part, garbage input and invalid
+entry indexes. The CI workflow builds with ASAN/UBSAN (`-DNCRAR_SANITIZE=ON`, UBSAN halts on an
+error) and runs the same script, then packages the DMG and verifies its signature, architecture and
+version.
+
+Not covered yet: file-copy (`link_type` 5) and RAR4-link fixtures - the RAR 7.30 build used here
+refuses to write RAR4 or file-copy entries, so those paths are only checked by hand; the list
+entry/output caps have no test; there is no libFuzzer target, the malformed-input cases are corpus
+regressions only.
 
 ## Automation
 
@@ -89,7 +100,8 @@ and the hash in a reviewed commit, and then run `scripts/package.sh` and publish
     ncrar-helper link <archive> <entry-index> [--password-stdin]
 
 `version` prints one JSON object, `{"protocol":1,"unrar":11}`, with the protocol version and the
-UnRAR library version the helper was built against.
+UnRAR **DLL API** version `RARGetDllVersion()` reports (11 for UnRAR 7.x) - not the library release
+the binary was built against; that one is stated in the release notes.
 
 Each invocation performs one command. Passwords are taken from the `NCRAR_PASSWORD` environment
 variable, or from the first line of stdin when `--password-stdin` is given (never from the command

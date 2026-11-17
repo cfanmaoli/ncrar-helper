@@ -23,5 +23,11 @@ echo "${UNRAR_SHA256}  unrarsrc-${UNRAR_VERSION}.tar.gz" | shasum -a 256 -c -
 rm -rf unrar
 tar -xzf "unrarsrc-${UNRAR_VERSION}.tar.gz"
 
+# One small local patch on top of the pristine sources: UnRAR opens volumes without O_NONBLOCK, so
+# a FIFO (or a blocking device) placed at a volume name would hang the helper. The patch is
+# re-checked whenever UNRAR_VERSION changes - if it stops applying, fail loudly instead of building
+# an unprotected binary.
+patch -p1 -d unrar < "${CUR_DIR}/patches/unrar-nonblock.patch"
+
 echo "UnRAR ${UNRAR_VERSION} sources are in ${VENDOR_DIR}/unrar"
 echo "Reminder: distribution must keep the UnRAR license text (see ../LICENSE)."

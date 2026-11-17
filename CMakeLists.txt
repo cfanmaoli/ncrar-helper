@@ -31,5 +31,20 @@ target_compile_options(ncrar-helper PRIVATE -fvisibility=hidden)
 # The wrapper is compiled with the project's own warning level and hardening; the vendored UnRAR
 # sources keep compiling exactly as they ship upstream.
 set_source_files_properties(src/main.cpp PROPERTIES COMPILE_OPTIONS
-    "-Wall;-Wextra;-Werror;-fstack-protector-strong")
+    "-Wall;-Wextra;-Werror")
+# Protect every translation unit, including the vendored UnRAR parser - that is the code most
+# exposed to malicious archives, so it must not rely on the wrapper's flags.
+target_compile_options(ncrar-helper PRIVATE -fstack-protector-strong)
 target_compile_definitions(ncrar-helper PRIVATE $<$<CONFIG:Release>:_FORTIFY_SOURCE=2>)
+
+# Optional sanitizer build (used by CI): the wrapper gets ASAN+UBSAN, the vendored parser keeps
+# both but loses only the alignment check - UnRAR deliberately performs unaligned loads in
+# RawGet8(), which is harmless on arm64 yet undefined by the letter of the standard.
+option(NCRAR_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+if(NCRAR_SANITIZE)
+    target_compile_options(ncrar-helper PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -g)
+    target_link_options(ncrar-helper PRIVATE -fsanitize=address,undefined)
+    foreach(obj ${UNRAR_OBJECTS})
+        set_source_files_properties("${UNRAR_DIR}/${obj}.cpp" PROPERTIES COMPILE_OPTIONS "-fno-sanitize=alignment")
+    endforeach()
+endif()

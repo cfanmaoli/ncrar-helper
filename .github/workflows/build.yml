@@ -34,11 +34,21 @@ jobs:
     - name: Build with AddressSanitizer and UndefinedBehaviorSanitizer
       run: |
         cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_OSX_ARCHITECTURES=arm64 \
-          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
-          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          -DNCRAR_SANITIZE=ON
         cmake --build build-asan -j "$(sysctl -n hw.activecpu)"
     - name: Test the sanitizer build
       env:
-        ASAN_OPTIONS: detect_leaks=0
-        UBSAN_OPTIONS: print_stacktrace=1
+        # halt_on_error/abort turn a sanitizer report into a failing step instead of a log line.
+        ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
+        UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
       run: tests/run-tests.sh build-asan/ncrar-helper
+    - name: Package and verify the DMG
+      run: |
+        scripts/package.sh
+        codesign --verify --deep --strict dist/ncrar-helper.app
+        version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/ncrar-helper.app/Contents/Info.plist)
+        [ "$version" = "$(cat VERSION)" ] || { echo "bundle version $version != VERSION $(cat VERSION)"; exit 1; }
+        archs=$(lipo -archs dist/ncrar-helper.app/Contents/MacOS/ncrar-helper)
+        echo "architectures: $archs"
+        [ "$archs" = "arm64" ] || { echo "unexpected architectures: $archs"; exit 1; }
+        tests/run-tests.sh dist/ncrar-helper.app/Contents/MacOS/ncrar-helper

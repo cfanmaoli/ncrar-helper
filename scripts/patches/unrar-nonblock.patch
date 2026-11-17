@@ -1,0 +1,14 @@
+--- a/file.cpp
++++ b/file.cpp
+@@ -101,6 +101,11 @@
+ #else
+   int flags=UpdateMode ? O_RDWR:(WriteMode ? O_WRONLY:O_RDONLY);
+ 
++  // ncrar-helper patch: a FIFO or a blocking device placed at a volume name must not hang the
++  // reader. O_NONBLOCK has no effect on regular files, which is what an archive volume is.
++  if (!WriteMode)
++    flags|=O_NONBLOCK;
++
+   // 2025.06.09: We can't just set O_DIRECT for Unix like we set
+   // FILE_FLAG_SEQUENTIAL_SCAN for Windows to minimize disk caching.
+   // O_DIRECT might impose alignment requirements for data size, data address

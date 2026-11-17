@@ -27,6 +27,7 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <limits>
+#include <sys/stat.h>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -95,14 +96,16 @@ int PASCAL Callback(UINT _msg, LPARAM _user, LPARAM _p1, LPARAM _p2)
             const std::string name = _msg == UCM_CHANGEVOLUMEW
                                          ? Utf32ToUtf8(reinterpret_cast<const wchar_t *>(_p1), 4096)
                                          : std::string(reinterpret_cast<const char *>(_p1));
-            // Opening the file catches a missing volume as well as one that exists but can't be
-            // read (permissions, a directory in its place, an unreadable mount); UnRAR would loop
-            // on all of them.
-            const int volume_fd = ::open(name.c_str(), O_RDONLY | O_CLOEXEC);
+            // O_NONBLOCK keeps a FIFO (or a blocking device) from hanging the callback; the fstat
+            // then rejects anything that isn't a regular file. Missing volumes, unreadable ones and
+            // directories are refused the same way. UnRAR would retry all of them.
+            const int volume_fd = ::open(name.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
             if( volume_fd < 0 )
                 return -1;
+            struct stat volume_stat{};
+            const bool regular = ::fstat(volume_fd, &volume_stat) == 0 && S_ISREG(volume_stat.st_mode);
             ::close(volume_fd);
-            return 1;
+            return regular ? 1 : -1;
         }
         case UCM_NEEDPASSWORD:
         case UCM_NEEDPASSWORDW: {

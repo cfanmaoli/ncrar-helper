@@ -75,6 +75,17 @@ cp "${DATA}/multi.part1.rar" "${TMP}/"
 run "${TIMEOUT}" 5 "${HELPER}" list "${TMP}/multi.part1.rar"
 [ "${code}" -eq 4 ] || fail "missing volume exit ${code} (expected 4, and it must not hang)"
 
+# A FIFO in place of the next volume must be refused, not opened with a blocking read.
+rm -f "${TMP}"/multi.part*.rar
+cp "${DATA}/multi.part1.rar" "${TMP}/"
+mkfifo "${TMP}/multi.part2.rar"
+run "${TIMEOUT}" 5 "${HELPER}" list "${TMP}/multi.part1.rar"
+rm -f "${TMP}/multi.part2.rar"
+# 4 when the volume is unreachable, 3 when it opens but isn't an archive - either way it must not
+# wait for a FIFO writer.
+{ [ "${code}" -eq 4 ] || [ "${code}" -eq 3 ]; } ||
+    fail "FIFO volume exit ${code} (expected 3 or 4, and it must not hang)"
+
 # A volume that exists but can't be opened must fail the same way instead of being retried.
 rm -f "${TMP}"/multi.part*.rar
 cp "${DATA}"/multi.part*.rar "${TMP}/"
