@@ -35,9 +35,12 @@ exists, carries a valid code signature and answers the `version` handshake with 
 protocol is used - an arbitrary binary dropped at that path is not executed.
 
 The bundle is ad-hoc signed and not notarised, so the first launch of a downloaded copy is blocked
-by Gatekeeper. Allow it in **System Settings → Privacy & Security** ("Open Anyway") rather than
-stripping the quarantine attribute with a script: the attribute is the only record of where the
-binary came from, and the application keeps working after a one-time approval.
+by Gatekeeper. Allow it in **System Settings → Privacy & Security** ("Open Anyway"), or remove the
+quarantine attribute after verifying the SHA256 from the release page:
+
+    xattr -dr com.apple.quarantine /Applications/ncrar-helper.app
+
+The attribute records where the download came from, so the SHA256 check matters before removing it.
 
 In the file manager the component is controlled by **Preferences → Compression → Use the
 ncrar-helper component for RAR archives** (中文界面：设置 → 压缩); the same pane shows whether it is
