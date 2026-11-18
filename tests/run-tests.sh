@@ -54,6 +54,16 @@ run "${HELPER}" link "${DATA}/plain.rar" 3
 [ "${code}" -eq 0 ] || fail "link exit ${code}"
 [ "${out}" = '{"target":"a.txt"}' ] || fail "link target: '${out}'"
 
+echo "== RAR4 symlink target"
+# RAR4 stores the target in the entry payload, so the helper extracts the entry into a private
+# directory. The destination is pinned inside that directory - a regression here once wrote the
+# link into the current working directory.
+rm -f link
+run "${HELPER}" link "${DATA}/rar4_link.rar" 1
+[ "${code}" -eq 0 ] || fail "RAR4 link exit ${code}"
+[ "${out}" = '{"target":"test.txt"}' ] || fail "RAR4 link target: '${out}'"
+[ ! -e link ] || { rm -f link; fail "RAR4 link extraction wrote into the current directory"; }
+
 echo "== passwords"
 out=$(NCRAR_PASSWORD='päss' "$HELPER" read "${DATA}/encrypted.rar" 0 2>/dev/null)
 code=$?

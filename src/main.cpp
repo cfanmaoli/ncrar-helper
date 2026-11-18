@@ -528,16 +528,19 @@ Status ResolveLinkTargetByExtraction(Archive &_archive, bool _had_password, std:
 
     _archive.ctx.output_fd = -1;
     _archive.ctx.write_failed = false;
-    // The entry name comes from an untrusted archive; pin the output name so UnRAR writes exactly
-    // one object inside the mkdtemp directory instead of relying on its own path cleanup.
+    // The entry name comes from an untrusted archive; pin the destination instead of letting UnRAR
+    // derive it. DllDestName is used verbatim (it is a full path, not a name relative to ExtrPath),
+    // so it must be the absolute mkdtemp path - passing a bare name wrote the link into the current
+    // directory, and passing nullptr went back to trusting the entry name.
+    const std::string extracted_path = temp_dir.Path() + "/" + kExtractedLinkName;
     const int rc = RARProcessFile(_archive.handle,
                                   RAR_EXTRACT,
                                   const_cast<char *>(temp_dir.Path().c_str()),
-                                  const_cast<char *>(kExtractedLinkName));
+                                  const_cast<char *>(extracted_path.c_str()));
     if( rc != ERAR_SUCCESS )
         return StatusForRarError(rc, _had_password);
 
-    if( !ReadLinkTarget(temp_dir.Path() + "/" + kExtractedLinkName, _target) )
+    if( !ReadLinkTarget(extracted_path, _target) )
         return MakeStatus(kExitRead, "cannot determine the link target");
 
     if( !temp_dir.Remove() )
