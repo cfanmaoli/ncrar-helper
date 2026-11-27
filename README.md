@@ -19,7 +19,7 @@ output limit on top.
 
 ## Requirements
 
-- macOS 12 or later (published builds are arm64; the sources build on any macOS with CMake)
+- macOS 13 or later (published builds are arm64; the sources build on any macOS with CMake)
 - CMake 3.20+ and the Xcode command line tools
 - `wget` for `scripts/bootstrap-unrar.sh` (`brew install wget`)
 
