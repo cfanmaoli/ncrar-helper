@@ -70,22 +70,22 @@ jobs:
         LATEST: ${{ needs.check.outputs.latest }}
         PINNED: ${{ needs.check.outputs.pinned }}
       run: |
+        body=$(cat <<'EOF'
+        rarlab.com offers **UnRAR __LATEST__** (the repository pins __PINNED__).
+
+        The sources are pinned by SHA256 so that an unreviewed download is never compiled - update both constants in `scripts/bootstrap-unrar.sh` manually:
+
+        1. Download `https://www.rarlab.com/rar/unrarsrc-__LATEST__.tar.gz` and inspect the changelog.
+        2. Record the checksum: `shasum -a 256 unrarsrc-__LATEST__.tar.gz` (cross-check it against an independent mirror if possible).
+        3. Set `UNRAR_VERSION=__LATEST__` and the matching `UNRAR_SHA256` in `scripts/bootstrap-unrar.sh`, bump `VERSION` and commit the two files.
+        4. Run `scripts/bootstrap-unrar.sh`, `scripts/package.sh` and `tests/run-tests.sh build/ncrar-helper`, then publish a release with the DMG and its `.sha256` file.
+
+        Close this issue once the new version is released; the next scheduled run then reports the following upstream version.
+        EOF
+        )
+        body=${body//__LATEST__/$LATEST}
+        body=${body//__PINNED__/$PINNED}
         gh issue create --repo "$GITHUB_REPOSITORY" \
           --title "UnRAR $LATEST is available" \
           --assignee cfanmaoli \
-          --body "rarlab.com offers **UnRAR $LATEST** (the repository pins $PINNED).
-
-        The sources are pinned by SHA256 so that an unreviewed download is never compiled - update
-        both constants in `scripts/bootstrap-unrar.sh` manually:
-
-        1. Download `https://www.rarlab.com/rar/unrarsrc-$LATEST.tar.gz` and inspect the changelog.
-        2. Record the checksum: `shasum -a 256 unrarsrc-$LATEST.tar.gz` (cross-check it against an
-           independent mirror if possible).
-        3. Set `UNRAR_VERSION=$LATEST` and the matching `UNRAR_SHA256` in
-           `scripts/bootstrap-unrar.sh`, bump `VERSION` and commit the two files.
-        4. Run `scripts/bootstrap-unrar.sh`, `scripts/package.sh` and
-           `tests/run-tests.sh build/ncrar-helper`, then publish a release with the DMG and its
-           `.sha256` file.
-
-        Close this issue once the new version is released; the next scheduled run then reports the
-        following upstream version."
+          --body "$body"

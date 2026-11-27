@@ -43,6 +43,7 @@ echo "${out}" | tail -1 | grep -q '"done":true,"entries":5' || fail "list termin
 echo "${out}" | grep -q '"name":"文件.txt"' || fail "unicode entry name"
 echo "${out}" | grep -q '"link_type":1' || fail "symlink entry"
 echo "${out}" | grep -q '"link_target":"a.txt"' || fail "symlink target in listing"
+echo "${out}" | grep -q '"name":"sub","dir":true,.*"mode":16877' || fail "unix directory mode in listing"
 
 echo "== read"
 run "${HELPER}" read "${DATA}/plain.rar" 0
@@ -76,11 +77,30 @@ code=$?
 out=$(NCRAR_PASSWORD='wrong' "$HELPER" read "${DATA}/encrypted.rar" 0 2>/dev/null)
 code=$?
 [ "${code}" -eq 5 ] || fail "wrong password exit ${code}"
+err=$(NCRAR_PASSWORD='' "$HELPER" list "${DATA}/encrypted.rar" 2>&1 >/dev/null)
+code=$?
+[ "${code}" -eq 5 ] || fail "empty env password exit ${code}"
+echo "${err}" | grep -q 'a password is required' || fail "empty env password message: '${err}'"
+# version must not read stdin even when --password-stdin is passed (/dev/zero would hit the
+# password length limit and exit 2 if stdin were read).
+out=$("${HELPER}" version --password-stdin < /dev/zero 2>/dev/null)
+code=$?
+[ "${code}" -eq 0 ] || fail "version --password-stdin exit ${code}"
 
 echo "== multi-volume"
 run "${HELPER}" list "${DATA}/multi.part1.rar"
 [ "${code}" -eq 0 ] || fail "multi-volume list exit ${code}"
 echo "${out}" | tail -1 | grep -q '"entries":1' || fail "multi-volume entries"
+# Non-solid multi-volume archive with a split entry followed by another file: list and read indices
+# must stay aligned (RHDF_SPLITBEFORE continuation headers must not shift subsequent entries).
+run "${HELPER}" list "${DATA}/multi_split.part1.rar"
+[ "${code}" -eq 0 ] || fail "multi_split list exit ${code}"
+echo "${out}" | tail -1 | grep -q '"entries":2' || fail "multi_split entries"
+split_size=$("${HELPER}" read "${DATA}/multi_split.part1.rar" 0 2>/dev/null | wc -c | tr -d ' ')
+[ "${split_size}" -eq 6000 ] || fail "multi_split read entry 0 size: '${split_size}'"
+run "${HELPER}" read "${DATA}/multi_split.part1.rar" 1
+[ "${code}" -eq 0 ] || fail "multi_split read entry 1 exit ${code}"
+[ "${out}" = "after split" ] || fail "multi_split read entry 1 payload: '${out}'"
 cp "${DATA}/multi.part1.rar" "${TMP}/"
 run "${TIMEOUT}" 5 "${HELPER}" list "${TMP}/multi.part1.rar"
 [ "${code}" -eq 4 ] || fail "missing volume exit ${code} (expected 4, and it must not hang)"

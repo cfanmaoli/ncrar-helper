@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Builds the distributable RAR support component: ncrar-helper.app inside a DMG.
 set -o pipefail
 set -o xtrace
@@ -49,7 +49,7 @@ cat > "${APP}/Contents/Info.plist" <<PLIST
     <key>CFBundleShortVersionString</key>
     <string>${VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${VERSION}</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>LSUIElement</key>
@@ -64,7 +64,8 @@ PLIST
 
 # An ad-hoc signature is what the file manager's check accepts. A failure here used to be ignored,
 # which produced a DMG that the application would silently refuse to use - fail the build instead.
-codesign --force --deep --sign - "${APP}"
+codesign --force --sign - "${APP}/Contents/MacOS/${APP_NAME}"
+codesign --force --sign - "${APP}"
 codesign --verify --deep --strict "${APP}"
 
 STAGE="${ROOT_DIR}/dist/stage"

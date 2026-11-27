@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -52,6 +53,15 @@ constexpr size_t kMaxListEntries = 5'000'000;
 constexpr size_t kMaxListBytes = size_t{512} * 1024 * 1024;
 constexpr size_t kMaxPasswordSize = 4096;
 constexpr const char *kExtractedLinkName = "link";
+
+// UnRAR resource caps (in MB, as expected by RAROpenArchiveDataEx::MaxAllocate / MaxDiskWrite).
+// 4 GB matches UnRAR's default WinSizeLimit and blocks 64 GB RAR7 dictionary OOM bombs; disk
+// writes only happen for the tiny symlink created by RAR4 link resolution.
+constexpr unsigned int kMaxAllocateMB = 4096;
+constexpr unsigned int kMaxDiskWriteMB = 1;
+
+// Normalized Unix HostOS value exposed by UnRAR's RARReadHeaderEx (HOST_UNIX in headers.hpp).
+constexpr unsigned int kHostOsUnix = 3;
 
 // Values of RARHeaderDataEx::RedirType. They live in the library's private headers, so mirror the
 // small public part of the enum here instead of including internal UnRAR headers.
@@ -109,24 +119,24 @@ int PASCAL Callback(UINT _msg, LPARAM _user, LPARAM _p1, LPARAM _p2)
         }
         case UCM_NEEDPASSWORD:
         case UCM_NEEDPASSWORDW: {
-            if( ctx.password == nullptr )
-                return 0;
+            if( ctx.password == nullptr || *ctx.password == '\0' )
+                return -1;
             const size_t size = static_cast<size_t>(_p2);
             if( size == 0 )
-                return 0;
+                return -1;
             if( _msg == UCM_NEEDPASSWORD ) {
-                std::snprintf(reinterpret_cast<char *>(_p1), size, "%s", ctx.password);
+                const size_t len = std::strlen(ctx.password);
+                if( len >= size )
+                    return -1;
+                std::memcpy(reinterpret_cast<char *>(_p1), ctx.password, len + 1);
             }
             else {
-                // For the wide variant the capacity is a number of wchar_t units, and UnRAR expects
-                // a UTF-16 string - copying the UTF-8 bytes one by one breaks every non-ASCII
-                // password (and the ANSI fallback that would otherwise follow).
-                const size_t capacity = static_cast<size_t>(_p2);
-                if( capacity == 0 )
-                    return 0;
+                // On Unix/macOS wchar_t is 32-bit (UTF-32), and _p2 is the capacity in wchar_t
+                // units. Return -1 on invalid UTF-8 or overflow so UnRAR aborts instead of falling
+                // back to UCM_NEEDPASSWORD and silently truncating the password.
                 std::wstring wide;
-                if( !Utf8ToWide(ctx.password, capacity - 1, wide) )
-                    return 0;
+                if( !Utf8ToWide(ctx.password, size - 1, wide) )
+                    return -1;
                 std::wmemcpy(reinterpret_cast<wchar_t *>(_p1), wide.c_str(), wide.size() + 1);
             }
             return 1;
@@ -142,7 +152,8 @@ int PASCAL Callback(UINT _msg, LPARAM _user, LPARAM _p1, LPARAM _p2)
                     continue;
                 if( written <= 0 ) {
                     ctx.write_failed = true;
-                    return 0;
+                    // UnRAR's UNRARCALLBACK only aborts extraction on -1 (returning 0 continues).
+                    return -1;
                 }
                 data += written;
                 left -= static_cast<size_t>(written);
@@ -150,7 +161,9 @@ int PASCAL Callback(UINT _msg, LPARAM _user, LPARAM _p1, LPARAM _p2)
             return 1;
         }
         case UCM_LARGEDICT:
-            return 1;
+            // Refuse dictionaries larger than UnRAR's default 4 GB limit so a tiny crafted RAR7
+            // archive cannot request a 64 GB allocation.
+            return 0;
         default:
             return 0;
     }
@@ -158,6 +171,8 @@ int PASCAL Callback(UINT _msg, LPARAM _user, LPARAM _p1, LPARAM _p2)
 
 void AppendUtf8(std::string &_out, uint32_t _cp)
 {
+    if( _cp > 0x10FFFF || (_cp >= 0xD800 && _cp <= 0xDFFF) )
+        _cp = 0xFFFD;
     if( _cp < 0x80 ) {
         _out += static_cast<char>(_cp);
     }
@@ -193,20 +208,25 @@ bool Utf8ToWide(std::string_view _utf8, size_t _max_chars, std::wstring &_out)
     while( i < _utf8.size() && _out.size() < _max_chars ) {
         const auto c = static_cast<unsigned char>(_utf8[i]);
         uint32_t code_point = 0;
+        uint32_t min_code_point = 0;
         size_t extra = 0;
         if( c < 0x80 ) {
             code_point = c;
+            min_code_point = 0;
         }
         else if( (c & 0xE0) == 0xC0 ) {
             code_point = c & 0x1F;
+            min_code_point = 0x80;
             extra = 1;
         }
         else if( (c & 0xF0) == 0xE0 ) {
             code_point = c & 0x0F;
+            min_code_point = 0x800;
             extra = 2;
         }
         else if( (c & 0xF8) == 0xF0 ) {
             code_point = c & 0x07;
+            min_code_point = 0x10000;
             extra = 3;
         }
         else {
@@ -220,7 +240,8 @@ bool Utf8ToWide(std::string_view _utf8, size_t _max_chars, std::wstring &_out)
                 return false;
             code_point = (code_point << 6) | (continuation & 0x3F);
         }
-        if( code_point > 0x10FFFF || (code_point >= 0xD800 && code_point <= 0xDFFF) )
+        if( code_point == 0 || code_point < min_code_point || code_point > 0x10FFFF ||
+            (code_point >= 0xD800 && code_point <= 0xDFFF) )
             return false;
         _out.push_back(static_cast<wchar_t>(code_point));
         i += extra + 1;
@@ -264,6 +285,8 @@ void AppendJsonString(std::string &_out, std::string_view _str)
 
 int64_t DosTimeToUnix(uint32_t _time)
 {
+    if( _time == 0 )
+        return 0;
     std::tm tm{};
     tm.tm_year = static_cast<int>(((_time >> 25) & 0x7F) + 1980 - 1900);
     tm.tm_mon = static_cast<int>((_time >> 21) & 0x0F) - 1;
@@ -329,6 +352,10 @@ Status StatusForRarError(int _rc, bool _had_password)
             return MakeStatus(kExitRead, "cannot create the entry data");
         case ERAR_BAD_DATA:
             return MakeStatus(kExitRead, "the archive data is damaged");
+        case ERAR_LARGE_DICT:
+            return MakeStatus(kExitRead, "the archive dictionary is too large");
+        case ERAR_USER_LIMIT:
+            return MakeStatus(kExitRead, "the archive exceeds resource limits");
         default:
             return MakeStatus(kExitRead, "cannot read the entry data");
     }
@@ -369,6 +396,8 @@ struct Archive {
         data.OpenMode = _mode;
         data.Callback = &Callback;
         data.UserData = reinterpret_cast<LPARAM>(&ctx);
+        data.MaxAllocate = kMaxAllocateMB;
+        data.MaxDiskWrite = kMaxDiskWriteMB;
         handle = RAROpenArchiveEx(&data);
         open_result = data.OpenResult;
         if( handle != nullptr )
@@ -402,20 +431,14 @@ std::string BuildEntryLine(const RARHeaderDataEx &_hdr, unsigned int _index, con
         line += ",\"link_target\":";
         AppendJsonString(line, _link_target);
     }
-    // A Unix-written archive stores the file mode (st_mode) in FileAttr; S_IFREG itself is 0x8000,
-    // so that bit marks the presence of Unix attributes. Some producers put the mode in the high
-    // half instead and mark it the same way - use that when it's non-zero. Windows-written entries
-    // keep DOS attributes in the low bits, so the field is omitted for them and stays absent from
-    // older consumers' point of view.
-    constexpr unsigned int kFileAttrUnixExtension = 0x8000;
-    unsigned int mode = 0;
-    if( (_hdr.FileAttr & kFileAttrUnixExtension) != 0 ) {
-        mode = _hdr.FileAttr >> 16;
-        if( mode == 0 )
-            mode = _hdr.FileAttr & 0xFFFF;
+    // UnRAR normalizes HostOS to HOST_UNIX (3) or HOST_WIN32 (2). Unix-written entries carry
+    // st_mode in the low 16 bits of FileAttr (including S_IFDIR = 0x4000, which has bit 0x8000
+    // clear). Windows-written entries store DOS attributes instead, so mode is omitted for them.
+    if( _hdr.HostOS == kHostOsUnix ) {
+        const unsigned int mode = _hdr.FileAttr & 0xFFFF;
+        if( mode != 0 )
+            line += ",\"mode\":" + std::to_string(mode);
     }
-    if( mode != 0 )
-        line += ",\"mode\":" + std::to_string(mode);
     line += '}';
     return line;
 }
@@ -423,7 +446,8 @@ std::string BuildEntryLine(const RARHeaderDataEx &_hdr, unsigned int _index, con
 Status
 SeekToEntry(Archive &_archive, unsigned int _index, RARHeaderDataEx &_hdr, wchar_t *_link_target, bool _had_password)
 {
-    for( unsigned int index = 0;; ++index ) {
+    uint64_t index = 0;
+    for( ;; ) {
         _hdr.RedirName = _link_target;
         _hdr.RedirNameSize = 1024;
         _link_target[0] = 0;
@@ -432,8 +456,14 @@ SeekToEntry(Archive &_archive, unsigned int _index, RARHeaderDataEx &_hdr, wchar
             return MakeStatus(kExitRead, "no such entry");
         if( rc != ERAR_SUCCESS )
             return StatusForRarError(rc, _had_password);
-        if( index == _index )
-            return {};
+        // RAR_OM_LIST skips split-before continuation headers automatically, while RAR_OM_EXTRACT
+        // exposes them. Skip them here without advancing the entry index so read/link stay aligned
+        // with list on multi-volume archives.
+        if( (_hdr.Flags & RHDF_SPLITBEFORE) == 0 ) {
+            if( index == _index )
+                return {};
+            ++index;
+        }
         const int skip_rc = RARProcessFile(_archive.handle, RAR_SKIP, nullptr, nullptr);
         if( skip_rc != ERAR_SUCCESS )
             return StatusForRarError(skip_rc, _had_password);
@@ -561,7 +591,8 @@ int FailStatus(const Status &_status)
 
 int CommandVersion()
 {
-    std::printf("{\"protocol\":1,\"unrar\":%d}\n", RARGetDllVersion());
+    if( std::printf("{\"protocol\":1,\"unrar\":%d}\n", RARGetDllVersion()) < 0 || std::fflush(stdout) != 0 )
+        return Fail("cannot write to stdout", kExitRead);
     return kExitOk;
 }
 
@@ -604,8 +635,7 @@ int CommandList(const char *_archive_path, const char *_password)
             return FailStatus(StatusForRarError(skip_rc, _password != nullptr));
     }
 
-    std::printf("{\"done\":true,\"entries\":%zu}\n", entries);
-    if( std::fflush(stdout) != 0 )
+    if( std::printf("{\"done\":true,\"entries\":%zu}\n", entries) < 0 || std::fflush(stdout) != 0 )
         return Fail("cannot write to stdout", kExitRead);
     return kExitOk;
 }
@@ -651,6 +681,8 @@ int CommandLink(const char *_archive_path, unsigned int _entry_index, const char
 
     std::string target = hdr.RedirName != nullptr ? Utf32ToUtf8(hdr.RedirName, hdr.RedirNameSize) : std::string{};
     if( target.empty() ) {
+        if( hdr.RedirType != kRedirUnixSymlink )
+            return Fail("cannot determine the link target", kExitRead);
         status = ResolveLinkTargetByExtraction(archive, _password != nullptr, target);
         if( !status.Ok() )
             return FailStatus(status);
@@ -659,8 +691,7 @@ int CommandLink(const char *_archive_path, unsigned int _entry_index, const char
     std::string line = "{\"target\":";
     AppendJsonString(line, target);
     line += "}\n";
-    std::fwrite(line.data(), 1, line.size(), stdout);
-    if( std::fflush(stdout) != 0 )
+    if( std::fwrite(line.data(), 1, line.size(), stdout) != line.size() || std::fflush(stdout) != 0 )
         return Fail("cannot write to stdout", kExitRead);
     return kExitOk;
 }
@@ -700,7 +731,8 @@ bool ParseIndex(const std::string &_arg, unsigned int &_index)
 
 const char *PasswordFromEnv()
 {
-    return std::getenv("NCRAR_PASSWORD");
+    const char *password = std::getenv("NCRAR_PASSWORD");
+    return password != nullptr && *password != '\0' ? password : nullptr;
 }
 
 void Usage()
@@ -715,9 +747,7 @@ void Usage()
                  "given.\n");
 }
 
-} // namespace
-
-int main(int _argc, char **_argv)
+int Run(int _argc, char **_argv)
 {
     std::vector<std::string> args(_argv + 1, _argv + _argc);
     if( args.empty() ) {
@@ -726,15 +756,33 @@ int main(int _argc, char **_argv)
     }
 
     bool password_stdin = false;
+    bool end_of_options = false;
     std::vector<std::string> rest;
     for( const std::string &arg : args ) {
-        if( arg == "--password-stdin" )
+        if( !end_of_options && arg == "--" )
+            end_of_options = true;
+        else if( !end_of_options && arg == "--password-stdin" )
             password_stdin = true;
         else
             rest.push_back(arg);
     }
 
     const std::string command = rest.empty() ? std::string{} : rest[0];
+    if( command == "version" && rest.size() == 1 )
+        return CommandVersion();
+
+    const bool is_list = command == "list" && rest.size() == 2;
+    const bool is_read = command == "read" && rest.size() == 3;
+    const bool is_link = command == "link" && rest.size() == 3;
+    if( !is_list && !is_read && !is_link ) {
+        Usage();
+        return kExitUsage;
+    }
+
+    unsigned int index = 0;
+    if( (is_read || is_link) && !ParseIndex(rest[2], index) )
+        return Fail("invalid entry index", kExitUsage);
+
     std::string password;
     const char *password_ptr = PasswordFromEnv();
     if( password_stdin ) {
@@ -745,23 +793,24 @@ int main(int _argc, char **_argv)
         password_ptr = password.empty() ? nullptr : password.c_str();
     }
 
-    if( command == "version" )
-        return CommandVersion();
-    if( command == "list" && rest.size() == 2 )
+    if( is_list )
         return CommandList(rest[1].c_str(), password_ptr);
-    if( command == "read" && rest.size() == 3 ) {
-        unsigned int index = 0;
-        if( !ParseIndex(rest[2], index) )
-            return Fail("invalid entry index", kExitUsage);
+    if( is_read )
         return CommandRead(rest[1].c_str(), index, password_ptr);
-    }
-    if( command == "link" && rest.size() == 3 ) {
-        unsigned int index = 0;
-        if( !ParseIndex(rest[2], index) )
-            return Fail("invalid entry index", kExitUsage);
-        return CommandLink(rest[1].c_str(), index, password_ptr);
-    }
+    return CommandLink(rest[1].c_str(), index, password_ptr);
+}
 
-    Usage();
-    return kExitUsage;
+} // namespace
+
+int main(int _argc, char **_argv)
+{
+    // Handle closed pipes uniformly via EPIPE in write() so UnRAR aborts cleanly and RAII cleanup
+    // runs instead of dying abruptly on SIGPIPE.
+    std::signal(SIGPIPE, SIG_IGN);
+    try {
+        return Run(_argc, _argv);
+    }
+    catch( const std::exception &_e ) {
+        return Fail(_e.what(), kExitRead);
+    }
 }

@@ -79,10 +79,9 @@ entry indexes. The CI workflow builds with ASAN/UBSAN (`-DNCRAR_SANITIZE=ON`, UB
 error) and runs the same script, then packages the DMG and verifies its signature, architecture and
 version.
 
-Not covered yet: file-copy (`link_type` 5) and RAR4-link fixtures - the RAR 7.30 build used here
-refuses to write RAR4 or file-copy entries, so those paths are only checked by hand; the list
-entry/output caps have no test; there is no libFuzzer target, the malformed-input cases are corpus
-regressions only.
+Not covered yet: file-copy (`link_type` 5) fixtures - the RAR 7.30 build used here refuses to write
+file-copy entries, so that path is only checked by hand; the list entry/output caps have no test;
+there is no libFuzzer target, the malformed-input cases are corpus regressions only.
 
 ## Automation
 

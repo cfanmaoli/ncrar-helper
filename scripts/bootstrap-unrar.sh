@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Downloads and unpacks the UnRAR sources that the helper is built against.
 #
 # The tarball is pinned by SHA256: the sources are executed as part of the build (and in CI, which

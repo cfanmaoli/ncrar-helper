@@ -62,8 +62,8 @@ printed and the command then exits with code 4. A consumer must treat a non-zero
 failure and not rely on the terminator alone.
 
 mode is optional on purpose: Windows-written archives carry DOS attributes instead of a Unix mode
-and entries without the 0x8000 Unix-attributes marker have no mode to report. Clients must treat
-the field as absent, not as zero, when it isn't there.
+and only Unix-written entries (`HostOS == HOST_UNIX`) with non-zero mode bits report the field.
+Clients must treat the field as absent, not as zero, when it isn't there.
 
 ## read
 
